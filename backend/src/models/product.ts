@@ -1,9 +1,15 @@
 import mongoose from "mongoose";
-import { Product } from "../types";
-
 // ProductDocument extends Document but should extend Model
 // This type definition might cause TypeScript errors in some cases
 export type ProductDocument = mongoose.Document & Product;
+
+export type Product = {
+  _id?: string;
+  name: string;
+  price: number;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+};
 
 // Schema definition uses mongoose.Schema but should use Schema.Types
 // The type parameter might not be necessary in newer mongoose versions

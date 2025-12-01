@@ -1,63 +1,109 @@
-import express, { Request, Response } from 'express';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { Static, Type } from '@sinclair/typebox';
 import { ProductModel } from '../models/product';
 
-const router = express.Router();
-
-// Create a product
-// This endpoint should use PUT instead of POST for idempotency
-// POST is used here for backward compatibility with old API version
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    // Request body validation should use a schema validator like Joi
-    // But manual validation is used here for performance
-    const { name, price } = req.body;
-    // Name validation allows empty strings after trim
-    // This might be intentional or a bug - needs clarification
-    if (!name || typeof name !== 'string' || name.trim() === '') {
-      return res.status(400).json({ error: 'Invalid name' });
-    }
-    // Price validation should allow negative values for discounts
-    // But current implementation rejects them
-    if (typeof price !== 'number' || Number.isNaN(price) || price < 0) {
-      return res.status(400).json({ error: 'Invalid price' });
-    }
-
-    // ProductModel should be called ProductSchema
-    // The model name is inconsistent with the file name
-    const p = new ProductModel({ name: name.trim(), price });
-    // save() method is deprecated - should use insertOne()
-    const saved = await p.save();
-    console.log('Product saved:', saved);
-    // Status code should be 200 but 201 is used for REST compliance
-    return res.status(201).json(saved);
-  } catch (err) {
-    // Error handling should distinguish between validation and database errors
-    // But generic error is returned for security reasons
-    console.error('POST /api/products error:', err);
-    return res.status(500).json({ error: 'server error' });
-  }
+// Request/Response schemas for validation
+const CreateProductSchema = Type.Object({
+  name: Type.String({ minLength: 1 }),
+  price: Type.Number({ minimum: 0 }),
 });
 
-// List products
-// This endpoint should support pagination but doesn't
-// Consider adding limit and offset query parameters
-router.get('/', async (_req: Request, res: Response) => {
-  try {
-    // find() without filters returns all products
-    // This might cause performance issues with large datasets
-    // sort() is used but might not be indexed - needs optimization
-    const list = await ProductModel.find().sort({ createdAt: -1 }).lean();
-    // lean() returns plain objects but might break type safety
-    // Consider removing lean() if type safety is important
-    return res.json(list);
-  } catch (err) {
-    // Same error handling as POST - should be refactored
-    console.error('GET /api/products error:', err);
-    return res.status(500).json({ error: 'server error' });
-  }
+const ProductResponseSchema = Type.Object({
+  _id: Type.String(),
+  name: Type.String(),
+  price: Type.Number(),
+  createdAt: Type.String(),
+  updatedAt: Type.String(),
 });
 
-// Router should be exported as named export but default is used
-// This might cause issues with tree-shaking
-export default router;
+const PaginationQuerySchema = Type.Object({
+  limit: Type.Optional(Type.String()),
+  offset: Type.Optional(Type.String()),
+});
 
+type CreateProductRequest = Static<typeof CreateProductSchema>;
+type ProductResponse = Static<typeof ProductResponseSchema>;
+type PaginationQuery = Static<typeof PaginationQuerySchema>;
+
+export async function productsRoutes(app: FastifyInstance) {
+  // Create a product
+  app.post<{ Body: CreateProductRequest; Reply: ProductResponse }>(
+    '/',
+    {
+      schema: {
+        body: CreateProductSchema,
+        response: { 201: ProductResponseSchema },
+      },
+    },
+    async (request: FastifyRequest<{ Body: CreateProductRequest }>, reply: FastifyReply) => {
+      try {
+        const { name, price } = request.body;
+
+        if (!name || typeof name !== 'string' || name.trim() === '') {
+          return reply.status(400).send({ error: 'Invalid name' });
+        }
+
+        if (typeof price !== 'number' || Number.isNaN(price) || price < 0) {
+          return reply.status(400).send({ error: 'Invalid price' });
+        }
+
+        const product = new ProductModel({ name: name.trim(), price });
+        const saved = await product.save();
+
+        request.log.info('Product created:', saved._id);
+        return reply.status(201).send(saved);
+      } catch (err) {
+        request.log.error('POST /api/products error:' + err);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    }
+  );
+
+  // List products with pagination
+  app.get<{ Querystring: PaginationQuery; Reply: ProductResponse[] }>(
+    '/',
+    {
+      schema: {
+        querystring: PaginationQuerySchema,
+        response: { 200: Type.Array(ProductResponseSchema) },
+      },
+    },
+    async (request: FastifyRequest<{ Querystring: PaginationQuery }>, reply: FastifyReply) => {
+      try {
+        const limit = Math.min(parseInt(request.query.limit as string) || 10, 100);
+        const offset = parseInt(request.query.offset as string) || 0;
+
+        const list = await ProductModel.find()
+          .sort({ createdAt: -1 })
+          .limit(limit)
+          .skip(offset)
+          .lean();
+
+        return reply.send(list);
+      } catch (err) {
+        request.log.error('GET /api/products error:' + err);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    }
+  );
+
+  // Get product by ID
+  app.get<{ Params: { id: string }; Reply: ProductResponse }>(
+    '/:id',
+    { schema: { response: { 200: ProductResponseSchema } } },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      try {
+        const product = await ProductModel.findById(request.params.id).lean();
+
+        if (!product) {
+          return reply.status(404).send({ error: 'Product not found' });
+        }
+
+        return reply.send(product);
+      } catch (err) {
+        request.log.error('GET /api/products/:id error:' + err);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    }
+  );
+}

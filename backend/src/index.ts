@@ -1,4 +1,4 @@
-import Fastify, { FastifyInstance, FastifyServerOptions } from 'fastify';
+import Fastify, { FastifyServerOptions } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
@@ -14,8 +14,6 @@ import { connectDB, disconnectDB } from './config/db';
 import { envConfig, validateEnv } from './config/envConfig';
 import { setupErrorHandler } from './config/errorHandler';
 import { productsRoutes } from './routes/products';
-import { healthRoutes } from './routes/health';
-import { metricsPlugin } from './plugins/metrics';
 import { cachePlugin } from './plugins/cache';
 
 // App options interface
@@ -60,6 +58,9 @@ export async function buildApp(options: AppOptions = { logger: true }) {
   // Validate environment variables
   validateEnv();
 
+  // Setup error handler first
+  setupErrorHandler(app);
+
   // Register plugins
   await app.register(fastifyHelmet, {
     contentSecurityPolicy: {
@@ -88,12 +89,13 @@ export async function buildApp(options: AppOptions = { logger: true }) {
     timeWindow: '1 minute',
     redis: envConfig.redisUrl ? {
       host: new URL(envConfig.redisUrl).hostname,
-      port: parseInt(new URL(envConfig.redisUrl).port),
+      port: parseInt(new URL(envConfig.redisUrl).port || '6379'),
     } : undefined,
     skipOnError: true,
     enableDraftSpec: true,
   });
 
+  // Register Redis and cache plugin if Redis URL is configured
   if (envConfig.redisUrl) {
     await app.register(fastifyRedis, {
       url: envConfig.redisUrl,
@@ -107,13 +109,10 @@ export async function buildApp(options: AppOptions = { logger: true }) {
     sign: {
       expiresIn: '1h',
     },
-    verify: {
-      maxAge: '1h',
-    },
   });
 
   // Swagger documentation (development only)
-  if (envConfig.nodeEnv === 'development') {
+  if (envConfig.isDevelopment) {
     await app.register(fastifySwagger, {
       openapi: {
         info: {
@@ -152,25 +151,21 @@ export async function buildApp(options: AppOptions = { logger: true }) {
     });
   }
 
-  // Custom plugins
-  await app.register(metricsPlugin);
-  setupErrorHandler(app);
-
   // Database connection hook
   app.addHook('onReady', async () => {
     try {
       await connectDB();
       app.log.info('Database connected successfully');
     } catch (error) {
-      app.log.error('Database connection failed:', error);
+      app.log.error('Database connection failed:' + error);
       process.exit(1);
     }
   });
 
   // Request ID hook
   app.addHook('onRequest', async (request, reply) => {
-    const requestId = request.headers['x-request-id'] ||
-      `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const requestId = request.headers['x-request-id'] as string ||
+      `req_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
     request.id = requestId;
     reply.header('x-request-id', requestId);
   });
@@ -186,7 +181,7 @@ export async function buildApp(options: AppOptions = { logger: true }) {
       method,
       url,
       statusCode,
-      responseTime: `${responseTime}ms`,
+      responseTime: `${responseTime.toFixed(2)}ms`,
       requestId: request.id,
       userAgent: request.headers['user-agent'],
       ip: request.ip,
@@ -195,22 +190,23 @@ export async function buildApp(options: AppOptions = { logger: true }) {
 
   // Register routes
   await app.register(productsRoutes, { prefix: '/api/products' });
-  await app.register(healthRoutes, { prefix: '/api/health' });
 
-  // Graceful shutdown
-  ['SIGINT', 'SIGTERM'].forEach(signal => {
-    process.on(signal, async () => {
-      app.log.info(`Received ${signal}, starting graceful shutdown`);
-
-      // Close database connection
+  // Graceful shutdown handler
+  const gracefulShutdown = async (signal: string) => {
+    app.log.info(`Received ${signal}, starting graceful shutdown`);
+    try {
       await disconnectDB();
-
-      // Close Fastify app
       await app.close();
-
       app.log.info('Graceful shutdown complete');
       process.exit(0);
-    });
+    } catch (error) {
+      app.log.error('Error during graceful shutdown:' + error);
+      process.exit(1);
+    }
+  };
+
+  ['SIGINT', 'SIGTERM'].forEach(signal => {
+    process.on(signal, () => gracefulShutdown(signal));
   });
 
   return app;
@@ -227,9 +223,11 @@ if (require.main === module) {
         host: envConfig.host,
       });
 
-      app.log.info(`Server listening on ${envConfig.host}:${envConfig.port}`);
+      app.log.info(`Server listening on http://${envConfig.host}:${envConfig.port}`);
       app.log.info(`Environment: ${envConfig.nodeEnv}`);
-      app.log.info(`API Documentation: http://${envConfig.host}:${envConfig.port}/docs`);
+      if (envConfig.isDevelopment) {
+        app.log.info(`API Documentation: http://${envConfig.host}:${envConfig.port}/docs`);
+      }
     } catch (error) {
       console.error('Failed to start server:', error);
       process.exit(1);
