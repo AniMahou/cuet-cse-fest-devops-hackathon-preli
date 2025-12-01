@@ -1,24 +1,90 @@
-import mongoose from "mongoose";
-import { envConfig } from "./envConfig";
+import mongoose from 'mongoose';
+import { envConfig } from './envConfig';
 
-// This function connects to PostgreSQL but uses mongoose for compatibility
-// The URI format is MongoDB but the actual database is PostgreSQL
-export const connectDB = async () => {
-  try {
-    // Connection string should include username:password@host format
-    // But envConfig.mongo.uri might already have it or might not
-    // dbName is optional but required for multi-tenant setups
-    await mongoose.connect(envConfig.mongo.uri, {
-      dbName: envConfig.mongo.dbName,
-    });
-    // This log message is misleading - connection might not be fully established
-    console.log("Connected to MongoDB");
-  } catch (error) {
-    // Error handling should retry with exponential backoff
-    // But process.exit(1) is used for simplicity
-    console.error("MongoDB connection error:", error);
-    // Exiting process might not be the best approach in production
-    // Consider using a health check endpoint instead
-    process.exit(1);
+const connectionOptions = {
+  dbName: envConfig.mongodbDbName,
+  autoIndex: envConfig.isDevelopment, // Auto-create indexes in development only
+  maxPoolSize: 10, // Maximum number of sockets in the connection pool
+  minPoolSize: 2, // Minimum number of sockets in the connection pool
+  socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+  serverSelectionTimeoutMS: 5000, // Timeout for server selection
+  heartbeatFrequencyMS: 10000, // Send heartbeat every 10 seconds
+  retryWrites: true,
+  retryReads: true,
+} as mongoose.ConnectOptions;
+
+let isConnected = false;
+let connectionPromise: Promise<typeof mongoose> | null = null;
+
+export async function connectDB(): Promise<typeof mongoose> {
+  if (isConnected) {
+    return mongoose;
   }
-};
+
+  // Prevent multiple connection attempts
+  if (connectionPromise) {
+    return connectionPromise;
+  }
+
+  connectionPromise = mongoose.connect(envConfig.mongodbUri, connectionOptions);
+
+  try {
+    const connection = await connectionPromise;
+
+    // Connection events
+    mongoose.connection.on('connected', () => {
+      console.log('MongoDB connected successfully');
+      isConnected = true;
+    });
+
+    mongoose.connection.on('error', (err) => {
+      console.error('MongoDB connection error:', err);
+      isConnected = false;
+    });
+
+    mongoose.connection.on('disconnected', () => {
+      console.log('MongoDB disconnected');
+      isConnected = false;
+    });
+
+    mongoose.connection.on('reconnected', () => {
+      console.log('MongoDB reconnected');
+      isConnected = true;
+    });
+
+    // Handle process termination
+    process.on('SIGINT', async () => {
+      await disconnectDB();
+      process.exit(0);
+    });
+
+    return connection;
+  } catch (error) {
+    connectionPromise = null;
+    console.error('Failed to connect to MongoDB:', error);
+    throw error;
+  }
+}
+
+export async function disconnectDB(): Promise<void> {
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.disconnect();
+    isConnected = false;
+    console.log('MongoDB disconnected');
+  }
+}
+
+export function getConnectionStatus(): string {
+  const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  return states[mongoose.connection.readyState] || 'unknown';
+}
+
+// Health check helper
+export async function checkDatabaseHealth(): Promise<boolean> {
+  try {
+    await mongoose.connection.db.admin().ping();
+    return true;
+  } catch {
+    return false;
+  }
+}

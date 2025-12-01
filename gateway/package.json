@@ -1,16 +1,41 @@
 {
   "name": "gateway",
   "version": "1.0.0",
-  "main": "src/gateway.js",
+  "type": "module",
   "scripts": {
-    "start": "node src/gateway.js",
-    "dev": "nodemon src/gateway.js"
+    "dev": "node --watch src/gateway.js",
+    "start": "node dist/gateway.js",
+    "build": "tsc",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "type-check": "tsc --noEmit",
+    "docker:build": "docker build -t gateway:latest .",
+    "docker:run": "docker run -p 5921:5921 --env-file .env gateway:latest"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.6.0"
+    "@fastify/cors": "^8.4.0",
+    "@fastify/helmet": "^11.0.0",
+    "@fastify/http-proxy": "^9.2.0",
+    "@fastify/rate-limit": "^8.0.0",
+    "@fastify/reply-from": "^9.3.0",
+    "@fastify/type-provider-typebox": "^6.1.0",
+    "@sinclair/typebox": "^0.34.41",
+    "fastify": "^4.21.0",
+    "fastify-metrics": "^10.0.0",
+    "pino": "^8.15.0",
+    "prom-client": "^14.2.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.0"
+    "@types/node": "^20.8.0",
+    "@typescript-eslint/eslint-plugin": "^6.8.0",
+    "@typescript-eslint/parser": "^6.8.0",
+    "eslint": "^8.51.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "nodemon": "^3.0.1",
+    "prettier": "^3.0.3",
+    "tsx": "^3.13.0",
+    "typescript": "^5.2.2"
   }
 }
